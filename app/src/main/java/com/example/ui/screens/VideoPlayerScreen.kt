@@ -102,7 +102,9 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.source.SingleSampleMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.data.AnikotoRepository
@@ -225,6 +227,8 @@ private fun ProfessionalAnimePlayer(
     var availableQualities by remember { mutableStateOf<List<String>>(listOf("Auto")) }
     var selectedSubtitleTrack by remember { mutableStateOf<SubtitleTrack?>(null) }
     var isSubtitlesEnabled by remember { mutableStateOf(true) }
+    var currentSubtitleCues by remember { mutableStateOf<List<SubtitleCue>>(emptyList()) }
+    var activeCueText by remember { mutableStateOf("") }
     var resizeMode by remember { mutableStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
 
     var hasPlaybackError by remember { mutableStateOf(false) }
@@ -281,38 +285,21 @@ private fun ProfessionalAnimePlayer(
                 setDefaultRequestProperties(reqProps)
             }
 
-            val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
-            val mediaUri = Uri.parse(targetResult.url)
-            val mediaItemBuilder = MediaItem.Builder().setUri(mediaUri)
-
-            // Attach Subtitle Tracks if present
             if (targetResult.subtitles.isNotEmpty()) {
-                val subtitleConfigs = targetResult.subtitles.map { sub ->
-                    val mimeType = when {
-                        sub.url.endsWith(".vtt") || sub.url.contains(".vtt") -> MimeTypes.TEXT_VTT
-                        sub.url.endsWith(".srt") || sub.url.contains(".srt") -> MimeTypes.APPLICATION_SUBRIP
-                        sub.url.endsWith(".ass") || sub.url.contains(".ass") -> MimeTypes.TEXT_SSA
-                        else -> MimeTypes.TEXT_VTT
-                    }
-                    MediaItem.SubtitleConfiguration.Builder(Uri.parse(sub.url))
-                        .setMimeType(mimeType)
-                        .setLanguage(sub.label)
-                        .setLabel(sub.label)
-                        .setSelectionFlags(if (sub.isDefault) androidx.media3.common.C.SELECTION_FLAG_DEFAULT else 0)
-                        .build()
-                }
-                mediaItemBuilder.setSubtitleConfigurations(subtitleConfigs)
-                if (selectedSubtitleTrack == null) {
+                if (selectedSubtitleTrack == null || targetResult.subtitles.none { it.url == selectedSubtitleTrack?.url }) {
                     selectedSubtitleTrack = targetResult.subtitles.firstOrNull { it.isDefault } ?: targetResult.subtitles.firstOrNull()
                 }
+            } else {
+                selectedSubtitleTrack = null
             }
 
-            val mediaItem = mediaItemBuilder.build()
-            
-            // Check if the source is HLS and use the optimized HlsMediaSource with chunkless preparation for fast & smooth segment downloading
+            val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+            val mediaUri = Uri.parse(targetResult.url)
+            val mediaItem = MediaItem.fromUri(mediaUri)
+
             val isHls = targetResult.isM3u8 || targetResult.url.contains(".m3u8")
             val mediaSource = if (isHls) {
-                androidx.media3.exoplayer.hls.HlsMediaSource.Factory(dataSourceFactory)
+                HlsMediaSource.Factory(dataSourceFactory)
                     .setAllowChunklessPreparation(true)
                     .createMediaSource(mediaItem)
             } else {
@@ -325,9 +312,6 @@ private fun ProfessionalAnimePlayer(
             val trackParamsBuilder = exoPlayer.trackSelectionParameters.buildUpon()
             if (isSubtitlesEnabled) {
                 trackParamsBuilder.setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, false)
-                if (selectedSubtitleTrack != null) {
-                    trackParamsBuilder.setPreferredTextLanguage(selectedSubtitleTrack!!.label)
-                }
             } else {
                 trackParamsBuilder.setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true)
             }
@@ -335,6 +319,74 @@ private fun ProfessionalAnimePlayer(
 
             exoPlayer.prepare()
         }
+    }
+
+    // Async Fetch & Parse Subtitles from URL without blocking video stream
+    LaunchedEffect(selectedSubtitleTrack, currentStreamResult) {
+        val track = selectedSubtitleTrack
+        if (track == null || track.url.isEmpty()) {
+            currentSubtitleCues = emptyList()
+            activeCueText = ""
+            return@LaunchedEffect
+        }
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val url = java.net.URL(track.url)
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 12000
+                conn.readTimeout = 12000
+
+                val headers = currentStreamResult?.headers ?: emptyMap()
+                headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+                if (conn.getRequestProperty("User-Agent") == null) {
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                }
+                if (conn.getRequestProperty("Referer") == null) {
+                    conn.setRequestProperty("Referer", "https://anikoto.cz/")
+                }
+
+                if (conn.responseCode == 200) {
+                    val content = conn.inputStream.bufferedReader().use { it.readText() }
+                    val parsed = parseSubtitleContent(content)
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        currentSubtitleCues = parsed
+                    }
+                } else {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        currentSubtitleCues = emptyList()
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    currentSubtitleCues = emptyList()
+                }
+            }
+        }
+    }
+
+    // Continuously update active subtitle text based on current playback position
+    LaunchedEffect(currentPositionMs, currentSubtitleCues, isSubtitlesEnabled) {
+        if (!isSubtitlesEnabled || currentSubtitleCues.isEmpty()) {
+            activeCueText = ""
+        } else {
+            val cue = currentSubtitleCues.firstOrNull { currentPositionMs >= it.startMs && currentPositionMs <= it.endMs }
+            activeCueText = cue?.text ?: ""
+        }
+    }
+
+    LaunchedEffect(isSubtitlesEnabled, selectedSubtitleTrack) {
+        val trackParamsBuilder = exoPlayer.trackSelectionParameters.buildUpon()
+        if (isSubtitlesEnabled) {
+            trackParamsBuilder.setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, false)
+            selectedSubtitleTrack?.let {
+                val lang = if (it.label.lowercase().contains("eng")) "en" else it.label
+                trackParamsBuilder.setPreferredTextLanguage(lang)
+            }
+        } else {
+            trackParamsBuilder.setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true)
+        }
+        exoPlayer.trackSelectionParameters = trackParamsBuilder.build()
     }
 
     // Load available servers when episode changes
@@ -665,19 +717,47 @@ private fun ProfessionalAnimePlayer(
                             subSettings.fontColorHex.toInt(),
                             subSettings.backgroundColorHex.toInt(),
                             android.graphics.Color.TRANSPARENT,
-                            androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_NONE,
-                            android.graphics.Color.TRANSPARENT,
+                            androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW,
+                            android.graphics.Color.BLACK,
                             null
                         )
                     )
-                    val density = playerView.context.resources.displayMetrics.density
-                    val bottomPx = (subSettings.bottomOffsetDp * density).toInt()
-                    subView.translationY = -bottomPx.toFloat()
-                    subView.setBottomPaddingFraction((subSettings.bottomOffsetDp / 200f).coerceIn(0.02f, 0.8f))
+                    subView.translationY = 0f
+                    subView.setBottomPaddingFraction(0.08f)
                 }
             },
             modifier = Modifier.fillMaxSize()
         )
+
+        // Subtitle Overlay
+        if (isSubtitlesEnabled && activeCueText.isNotEmpty()) {
+            val fontColor = Color(subSettings.fontColorHex.toInt())
+            val bgColor = Color(subSettings.backgroundColorHex.toInt())
+            val fontSize = subSettings.fontSizeSp.sp
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = (subSettings.bottomOffsetDp + 24).dp),
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                Surface(
+                    color = bgColor,
+                    shape = RoundedCornerShape(8.dp),
+                    shadowElevation = 2.dp,
+                    modifier = Modifier.padding(horizontal = 24.dp)
+                ) {
+                    Text(
+                        text = activeCueText,
+                        color = fontColor,
+                        fontSize = fontSize,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+            }
+        }
 
         // Double Tap Visual Ripples
         AnimatedVisibility(
@@ -1560,6 +1640,7 @@ private fun ProfessionalAnimePlayer(
                                     onClick = {
                                         isSubtitlesEnabled = true
                                         selectedSubtitleTrack = track
+                                        prepareExoPlayer(currentStreamResult)
                                         showSubtitleSheet = false
                                     },
                                     shape = RoundedCornerShape(10.dp),
@@ -1849,4 +1930,101 @@ private fun formatTimeMs(timeMs: Long): String {
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return String.format("%02d:%02d", minutes, seconds)
+}
+
+data class SubtitleCue(
+    val startMs: Long,
+    val endMs: Long,
+    val text: String
+)
+
+private fun parseSubtitleContent(content: String): List<SubtitleCue> {
+    val cues = mutableListOf<SubtitleCue>()
+    val cleanContent = content.replace("\r\n", "\n").replace("\r", "\n")
+
+    if (cleanContent.contains("[Events]") || cleanContent.contains("Format: Layer")) {
+        return parseAssSubtitle(cleanContent)
+    }
+
+    val lines = cleanContent.split("\n")
+    var i = 0
+    val timestampRegex = Regex("""(?:(\d+):)?(\d{1,2}):(\d{2})[,.](\d{2,3})\s*-->\s*(?:(\d+):)?(\d{1,2}):(\d{2})[,.](\d{2,3})""")
+
+    while (i < lines.size) {
+        val line = lines[i].trim()
+        val match = timestampRegex.find(line)
+        if (match != null) {
+            val startMs = parseTimestamp(match.groupValues[1], match.groupValues[2], match.groupValues[3], match.groupValues[4])
+            val endMs = parseTimestamp(match.groupValues[5], match.groupValues[6], match.groupValues[7], match.groupValues[8])
+
+            i++
+            val textBuilder = StringBuilder()
+            while (i < lines.size && lines[i].trim().isNotEmpty() && !timestampRegex.containsMatchIn(lines[i])) {
+                val textLine = lines[i].trim()
+                if (!textLine.startsWith("NOTE") && !textLine.startsWith("WEBVTT") && !textLine.startsWith("STYLE") && !textLine.startsWith("REGION")) {
+                    val cleanText = textLine
+                        .replace(Regex("""<[^>]*>"""), "")
+                        .replace(Regex("""\{[^}]*\}"""), "")
+                        .trim()
+                    if (cleanText.isNotEmpty()) {
+                        if (textBuilder.isNotEmpty()) textBuilder.append("\n")
+                        textBuilder.append(cleanText)
+                    }
+                }
+                i++
+            }
+            if (textBuilder.isNotEmpty() && endMs > startMs) {
+                cues.add(SubtitleCue(startMs, endMs, textBuilder.toString()))
+            }
+        } else {
+            i++
+        }
+    }
+    return cues
+}
+
+private fun parseAssSubtitle(content: String): List<SubtitleCue> {
+    val cues = mutableListOf<SubtitleCue>()
+    val lines = content.split("\n")
+    for (line in lines) {
+        val trimmed = line.trim()
+        if (trimmed.startsWith("Dialogue:")) {
+            val parts = trimmed.substringAfter("Dialogue:").split(",", limit = 10)
+            if (parts.size >= 10) {
+                val startMs = parseAssTime(parts[1].trim())
+                val endMs = parseAssTime(parts[2].trim())
+                val rawText = parts[9].trim()
+                val cleanText = rawText
+                    .replace(Regex("""\{[^}]*\}"""), "")
+                    .replace("\\N", "\n")
+                    .replace("\\n", "\n")
+                    .trim()
+                if (cleanText.isNotEmpty() && endMs > startMs) {
+                    cues.add(SubtitleCue(startMs, endMs, cleanText))
+                }
+            }
+        }
+    }
+    return cues
+}
+
+private fun parseAssTime(timeStr: String): Long {
+    val parts = timeStr.split(":", ".")
+    if (parts.size >= 4) {
+        val h = parts[0].toLongOrNull() ?: 0L
+        val m = parts[1].toLongOrNull() ?: 0L
+        val s = parts[2].toLongOrNull() ?: 0L
+        val cs = parts[3].toLongOrNull() ?: 0L
+        return (h * 3600 + m * 60 + s) * 1000 + cs * 10
+    }
+    return 0L
+}
+
+private fun parseTimestamp(hStr: String, mStr: String, sStr: String, msStr: String): Long {
+    val h = if (hStr.isNotEmpty()) hStr.toLongOrNull() ?: 0L else 0L
+    val m = mStr.toLongOrNull() ?: 0L
+    val s = sStr.toLongOrNull() ?: 0L
+    val msVal = msStr.toLongOrNull() ?: 0L
+    val ms = if (msStr.length == 2) msVal * 10 else msVal
+    return (h * 3600 + m * 60 + s) * 1000 + ms
 }
