@@ -1210,7 +1210,8 @@ object AniListRepository {
     }
 
     suspend fun resolveAniListMediaId(animeId: String, animeTitle: String): Int? = withContext(Dispatchers.IO) {
-        val numericId = animeId.toIntOrNull()
+        val cleanIdStr = animeId.split("|")[0].split("$")[0].trim()
+        val numericId = cleanIdStr.toIntOrNull()
         if (numericId != null && numericId > 0) return@withContext numericId
         
         val cleaned = cleanTitle(animeTitle)
@@ -1363,14 +1364,18 @@ object AniListRepository {
         animeId: String,
         animeTitle: String
     ): Boolean = withContext(Dispatchers.IO) {
-        val mediaId = resolveAniListMediaId(animeId, animeTitle) ?: return@withContext false
         if (accessToken.isBlank()) return@withContext false
+        val mediaId = resolveAniListMediaId(animeId, animeTitle) ?: return@withContext false
 
         try {
             val query = """
                 query (${'$'}mediaId: Int) {
-                  MediaList (mediaId: ${'$'}mediaId) {
+                  Media (id: ${'$'}mediaId) {
                     id
+                    isFavourite
+                    mediaListEntry {
+                      id
+                    }
                   }
                 }
             """.trimIndent()
@@ -1392,9 +1397,14 @@ object AniListRepository {
 
             val response = okHttpClient.newCall(request).execute()
             val responseString = response.body?.string() ?: ""
+            var success = false
+
             if (responseString.isNotEmpty()) {
                 val json = JSONObject(responseString)
-                val entryId = json.optJSONObject("data")?.optJSONObject("MediaList")?.optInt("id", 0) ?: 0
+                val mediaObj = json.optJSONObject("data")?.optJSONObject("Media")
+                val entryId = mediaObj?.optJSONObject("mediaListEntry")?.optInt("id", 0) ?: 0
+                val isFav = mediaObj?.optBoolean("isFavourite", false) ?: false
+
                 if (entryId > 0) {
                     val deleteMutation = """
                         mutation (${'$'}id: Int) {
@@ -1422,10 +1432,50 @@ object AniListRepository {
                     val delResponse = okHttpClient.newCall(delRequest).execute()
                     val delString = delResponse.body?.string() ?: ""
                     if (delString.contains("deleted") || delString.contains("data")) {
-                        return@withContext true
+                        success = true
                     }
                 }
+
+                if (isFav) {
+                    val toggleMutation = """
+                        mutation (${'$'}animeId: Int) {
+                          ToggleFavourite (animeId: ${'$'}animeId) {
+                            anime {
+                              nodes {
+                                id
+                              }
+                            }
+                          }
+                        }
+                    """.trimIndent()
+
+                    val favBody = JSONObject().apply {
+                        put("query", toggleMutation)
+                        put("variables", JSONObject().apply {
+                            put("animeId", mediaId)
+                        })
+                    }
+
+                    val favRequest = Request.Builder()
+                        .url("https://graphql.anilist.co")
+                        .post(favBody.toString().toRequestBody("application/json".toMediaType()))
+                        .addHeader("Content-Type", "application/json")
+                        .addHeader("Accept", "application/json")
+                        .addHeader("Authorization", "Bearer $accessToken")
+                        .build()
+
+                    val favResponse = okHttpClient.newCall(favRequest).execute()
+                    val favString = favResponse.body?.string() ?: ""
+                    if (favString.contains("data")) {
+                        success = true
+                    }
+                }
+
+                if (entryId == 0 && !isFav) {
+                    success = true
+                }
             }
+            return@withContext success
         } catch (e: Exception) {
             e.printStackTrace()
         }

@@ -600,18 +600,19 @@ fun MyListScreen(
                                 coroutineScope.launch {
                                     try {
                                         val token = prefs.getString("anilist_access_token", "") ?: ""
+                                        val hasToken = token.isNotBlank()
                                         if (item.isHistoryItem) {
                                             WatchHistoryManager.deleteWatchHistoryItem(context, item.id, item.title)
-                                            if (isConnected && token.isNotBlank()) {
+                                            if (hasToken) {
                                                 AniListRepository.deleteMediaListEntry(token, item.id, item.title)
                                             }
-                                            Toast.makeText(context, "Deleted from Watch History & AniList", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, if (hasToken) "Deleted from Watch History & AniList" else "Deleted from Watch History", Toast.LENGTH_SHORT).show()
                                         } else {
                                             com.example.data.LocalMyListManager.removeMyListItem(context, item.id, item.title)
-                                            if (isConnected && token.isNotBlank()) {
+                                            if (hasToken) {
                                                 AniListRepository.deleteMediaListEntry(token, item.id, item.title)
                                             }
-                                            Toast.makeText(context, "Deleted from My List & AniList", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, if (hasToken) "Deleted from My List & AniList" else "Deleted from My List", Toast.LENGTH_SHORT).show()
                                         }
                                         watchHistoryList = WatchHistoryManager.getWatchHistory(context)
                                         favoritesList = com.example.data.LocalMyListManager.getAllMyListItems(context)
