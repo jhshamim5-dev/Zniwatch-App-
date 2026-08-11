@@ -28,7 +28,7 @@ data class AppReleaseInfo(
 object UpdateManager {
 
     // Default GitHub repository owner & repo name
-    private const val GITHUB_OWNER = "jhshamim5"
+    private const val GITHUB_OWNER = "jhshamim5-dev"
     private const val GITHUB_REPO = "Zniwatch-App-"
     private const val PREFS_NAME = "app_update_prefs"
     private const val KEY_DISMISSED_VERSION = "last_dismissed_version"
