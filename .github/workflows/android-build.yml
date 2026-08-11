@@ -54,13 +54,14 @@ jobs:
         if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/'))
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.0.1' }}
-          name: Release ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.0.1' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.0.2' }}
+          name: Release ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.0.2' }}
           body: |
-            Latest build for Black Page Anime!
+            Release v1.0.2 for Zniwatch Anime App!
             - Built with consistent signing key.
             - Direct in-app update supported.
           files: app/build/outputs/apk/debug/app-debug.apk
+          make_latest: true
           draft: false
           prerelease: false
         env:
