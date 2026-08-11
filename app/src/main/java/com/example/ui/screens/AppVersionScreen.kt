@@ -43,13 +43,32 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+import androidx.compose.ui.platform.LocalContext
+import com.example.BuildConfig
+import com.example.data.AppReleaseInfo
+import com.example.data.UpdateManager
+import com.example.ui.components.UpdateDialog
+
 @Composable
 fun AppVersionScreen(
     onBack: () -> Unit = {}
 ) {
-    var isChecking by remember { mutableStateOf(false) }
-    var updateState by remember { mutableStateOf("up_to_date") }
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+
+    var isChecking by remember { mutableStateOf(false) }
+    var releaseInfo by remember { mutableStateOf<AppReleaseInfo?>(null) }
+    var updateState by remember { mutableStateOf("up_to_date") }
+    var showDialog by remember { mutableStateOf(false) }
+
+    val currentVersion = BuildConfig.VERSION_NAME.ifEmpty { "1.0.0" }
+
+    if (showDialog && releaseInfo != null) {
+        UpdateDialog(
+            releaseInfo = releaseInfo!!,
+            onDismiss = { showDialog = false }
+        )
+    }
 
     Box(
         modifier = Modifier
@@ -118,7 +137,7 @@ fun AppVersionScreen(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "Current Version: v2.4.0 (Build 2026)",
+                    text = "Current Version: v$currentVersion",
                     color = Color.White.copy(alpha = 0.7f),
                     fontSize = 14.sp
                 )
@@ -145,7 +164,7 @@ fun AppVersionScreen(
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = "Checking for updates...",
+                                text = "Checking GitHub Releases...",
                                 color = Color.White.copy(alpha = 0.8f),
                                 fontSize = 14.sp
                             )
@@ -176,12 +195,20 @@ fun AppVersionScreen(
 
                 Button(
                     onClick = {
-                        if (!isChecking) {
+                        if (updateState == "update_available" && releaseInfo != null) {
+                            showDialog = true
+                        } else if (!isChecking) {
                             isChecking = true
                             coroutineScope.launch {
-                                delay(1500)
+                                val release = UpdateManager.checkForUpdate(context)
                                 isChecking = false
-                                updateState = "up_to_date"
+                                if (release != null && release.isNewerVersion) {
+                                    releaseInfo = release
+                                    updateState = "update_available"
+                                    showDialog = true
+                                } else {
+                                    updateState = "up_to_date"
+                                }
                             }
                         }
                     },
@@ -206,7 +233,7 @@ fun AppVersionScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (updateState == "up_to_date") "Check for Updates" else "Update Now",
+                            text = if (updateState == "update_available") "Update Now" else "Check for Updates",
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp
                         )

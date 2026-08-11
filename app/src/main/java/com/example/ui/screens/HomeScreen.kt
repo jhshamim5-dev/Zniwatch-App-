@@ -12,14 +12,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import com.example.data.AnimeCardItem
 import com.example.data.AnimeHeroSlide
+import com.example.data.AppReleaseInfo
 import com.example.data.GenreItem
+import com.example.data.UpdateManager
 import com.example.ui.components.AnimeHorizontalSection
 import com.example.ui.components.AppPullToRefreshLayout
 import com.example.ui.components.GenreLiquidGlassSection
 import com.example.ui.components.HeroBannerSlider
 import com.example.ui.components.UpcomingLandscapeSection
+import com.example.ui.components.UpdateDialog
 
 @Composable
 fun HomeScreen(
@@ -37,6 +46,32 @@ fun HomeScreen(
   onAnimeClick: (AnimeCardItem) -> Unit,
   onHeroClick: (AnimeHeroSlide) -> Unit = {}
 ) {
+  val context = LocalContext.current
+  var availableUpdate by remember { mutableStateOf<AppReleaseInfo?>(null) }
+
+  LaunchedEffect(Unit) {
+    try {
+      val release = UpdateManager.checkForUpdate(context)
+      if (release != null && release.isNewerVersion) {
+        if (!UpdateManager.isHomePopupDismissed(context, release.tagName)) {
+          availableUpdate = release
+        }
+      }
+    } catch (e: Exception) {
+      e.printStackTrace()
+    }
+  }
+
+  if (availableUpdate != null) {
+    UpdateDialog(
+      releaseInfo = availableUpdate!!,
+      onDismiss = {
+        UpdateManager.dismissHomePopup(context, availableUpdate!!.tagName)
+        availableUpdate = null
+      }
+    )
+  }
+
   if (isHomeLoading) {
     Box(
       modifier = Modifier.fillMaxSize(),
