@@ -182,20 +182,39 @@ fun SubtitleScreen(
                         .border(1.dp, Color(0xFF2E2E3E), RoundedCornerShape(16.dp)),
                     contentAlignment = Alignment.BottomCenter
                 ) {
+                    val isBgNone = bgColorHex == 0x00000000L || Color(bgColorHex).alpha == 0f
                     Box(
                         modifier = Modifier
                             .padding(bottom = bottomOffsetDp.dp)
-                            .background(
-                                color = Color(bgColorHex),
-                                shape = RoundedCornerShape(6.dp)
+                            .then(
+                                if (!isBgNone) {
+                                    Modifier
+                                        .background(
+                                            color = Color(bgColorHex),
+                                            shape = RoundedCornerShape(6.dp)
+                                        )
+                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                } else {
+                                    Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                }
                             )
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
                     ) {
                         Text(
                             text = "Sample Subtitle Text - Preview",
                             color = Color(fontColorHex),
                             fontSize = fontSizeSp.sp,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.Medium,
+                            style = if (isBgNone) {
+                                androidx.compose.ui.text.TextStyle(
+                                    shadow = androidx.compose.ui.graphics.Shadow(
+                                        color = Color.Black,
+                                        offset = androidx.compose.ui.geometry.Offset(2f, 2f),
+                                        blurRadius = 4f
+                                    )
+                                )
+                            } else {
+                                androidx.compose.ui.text.TextStyle.Default
+                            }
                         )
                     }
                 }

@@ -5,6 +5,7 @@ import android.widget.Toast
 import android.content.pm.ActivityInfo
 import android.net.Uri
 import android.view.ViewGroup
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -38,13 +39,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.ClosedCaptionOff
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.HighQuality
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.FastForward
@@ -142,6 +143,7 @@ fun VideoPlayerScreen(
             val controller = WindowCompat.getInsetsController(window, window.decorView)
             controller.hide(WindowInsetsCompat.Type.systemBars())
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
 
         onDispose {
@@ -150,6 +152,7 @@ fun VideoPlayerScreen(
             if (windowDispose != null) {
                 val controllerDispose = WindowCompat.getInsetsController(windowDispose, windowDispose.decorView)
                 controllerDispose.show(WindowInsetsCompat.Type.systemBars())
+                windowDispose.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
         }
     }
@@ -700,6 +703,7 @@ private fun ProfessionalAnimePlayer(
                 PlayerView(ctx).apply {
                     useController = false
                     player = exoPlayer
+                    keepScreenOn = true
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
@@ -707,17 +711,19 @@ private fun ProfessionalAnimePlayer(
                 }
             },
             update = { playerView ->
+                playerView.keepScreenOn = true
                 playerView.resizeMode = resizeMode
                 playerView.subtitleView?.let { subView ->
                     subView.setApplyEmbeddedStyles(false)
                     subView.setApplyEmbeddedFontSizes(false)
                     subView.setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, subSettings.fontSizeSp)
+                    val isNoneBg = subSettings.backgroundColorHex == 0x00000000L
                     subView.setStyle(
                         androidx.media3.ui.CaptionStyleCompat(
                             subSettings.fontColorHex.toInt(),
-                            subSettings.backgroundColorHex.toInt(),
+                            if (isNoneBg) android.graphics.Color.TRANSPARENT else subSettings.backgroundColorHex.toInt(),
                             android.graphics.Color.TRANSPARENT,
-                            androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW,
+                            if (isNoneBg) androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW else androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_NONE,
                             android.graphics.Color.BLACK,
                             null
                         )
@@ -734,6 +740,7 @@ private fun ProfessionalAnimePlayer(
             val fontColor = Color(subSettings.fontColorHex.toInt())
             val bgColor = Color(subSettings.backgroundColorHex.toInt())
             val fontSize = subSettings.fontSizeSp.sp
+            val isBgNone = subSettings.backgroundColorHex == 0x00000000L || bgColor.alpha == 0f
 
             Box(
                 modifier = Modifier
@@ -741,19 +748,38 @@ private fun ProfessionalAnimePlayer(
                     .padding(bottom = (subSettings.bottomOffsetDp + 24).dp),
                 contentAlignment = Alignment.BottomCenter
             ) {
-                Surface(
-                    color = bgColor,
-                    shape = RoundedCornerShape(8.dp),
-                    shadowElevation = 2.dp,
-                    modifier = Modifier.padding(horizontal = 24.dp)
-                ) {
+                if (!isBgNone) {
+                    Surface(
+                        color = bgColor,
+                        shape = RoundedCornerShape(8.dp),
+                        shadowElevation = 0.dp,
+                        tonalElevation = 0.dp,
+                        modifier = Modifier.padding(horizontal = 24.dp)
+                    ) {
+                        Text(
+                            text = activeCueText,
+                            color = fontColor,
+                            fontSize = fontSize,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                } else {
                     Text(
                         text = activeCueText,
                         color = fontColor,
                         fontSize = fontSize,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        style = androidx.compose.ui.text.TextStyle(
+                            shadow = androidx.compose.ui.graphics.Shadow(
+                                color = Color.Black,
+                                offset = androidx.compose.ui.geometry.Offset(2f, 2f),
+                                blurRadius = 4f
+                            )
+                        ),
+                        modifier = Modifier.padding(horizontal = 24.dp)
                     )
                 }
             }
@@ -1096,7 +1122,7 @@ private fun ProfessionalAnimePlayer(
                                 if (episodes.isNotEmpty()) {
                                     IconButton(onClick = { showEpisodeSheet = true }) {
                                         Icon(
-                                            imageVector = Icons.Filled.List,
+                                            imageVector = Icons.AutoMirrored.Filled.List,
                                             contentDescription = "Episode List",
                                             tint = if (showEpisodeSheet) Color.White else Color(0xFFCCCCCC),
                                             modifier = Modifier.size(22.dp)

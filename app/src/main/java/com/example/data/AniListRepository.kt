@@ -848,7 +848,7 @@ object AniListRepository {
             val responseString = response.body?.string() ?: ""
             if (responseString.isNotEmpty()) {
                 val json = JSONObject(responseString)
-                return@withContext json.optString("access_token", null)
+                return@withContext if (json.has("access_token")) json.getString("access_token") else null
             }
         } catch (e: Exception) {
             e.printStackTrace()

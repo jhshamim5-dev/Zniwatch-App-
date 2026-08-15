@@ -756,7 +756,6 @@ private fun YouTubeTrailerPlayer(youtubeId: String) {
           settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            databaseEnabled = true
             mediaPlaybackRequiresUserGesture = false
             loadWithOverviewMode = true
             useWideViewPort = true
