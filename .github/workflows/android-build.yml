@@ -31,14 +31,10 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Ensure Debug Keystore
+      - name: Restore Consistent Signing Keystore
         run: |
-          if [ -f debug.keystore.base64 ]; then
-            (base64 -d debug.keystore.base64 > debug.keystore || base64 --decode debug.keystore.base64 > debug.keystore) 2>/dev/null || true
-          fi
-          if [ ! -f debug.keystore ] || [ ! -s debug.keystore ]; then
-            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          fi
+          python3 -c "import base64; open('debug.keystore','wb').write(base64.b64decode(open('debug.keystore.base64').read().strip()))"
+          keytool -list -keystore debug.keystore -storepass android
 
       - name: Build Debug APK
         run: gradle assembleDebug --stacktrace

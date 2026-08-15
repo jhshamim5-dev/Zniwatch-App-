@@ -105,12 +105,45 @@ object UpdateManager {
         prefs.edit().putString(KEY_DISMISSED_VERSION, tagName).apply()
     }
 
+    fun getCachedUpdateFile(context: Context, tagName: String? = null): File? {
+        val updateDir = File(context.getExternalFilesDir(null), "updates")
+        if (!updateDir.exists()) return null
+        val cleanTag = tagName?.replace(Regex("[^a-zA-Z0-9._-]"), "_") ?: ""
+        val targetedFile = if (cleanTag.isNotEmpty()) File(updateDir, "update_$cleanTag.apk") else null
+        val defaultFile = File(updateDir, "update.apk")
+
+        if (targetedFile != null && targetedFile.exists() && targetedFile.length() > 1024 * 50) {
+            return targetedFile
+        }
+        if (defaultFile.exists() && defaultFile.length() > 1024 * 50) {
+            return defaultFile
+        }
+        return null
+    }
+
     suspend fun downloadApk(
         context: Context,
         downloadUrl: String,
+        tagName: String? = null,
         onProgress: (Int) -> Unit
     ): File? = withContext(Dispatchers.IO) {
         try {
+            val updateDir = File(context.getExternalFilesDir(null), "updates")
+            if (!updateDir.exists()) {
+                updateDir.mkdirs()
+            }
+
+            val cleanTag = tagName?.replace(Regex("[^a-zA-Z0-9._-]"), "_") ?: ""
+            val apkFile = if (cleanTag.isNotEmpty()) File(updateDir, "update_$cleanTag.apk") else File(updateDir, "update.apk")
+
+            // If already downloaded and non-empty, avoid re-downloading
+            if (apkFile.exists() && apkFile.length() > 1024 * 50) {
+                withContext(Dispatchers.Main) {
+                    onProgress(100)
+                }
+                return@withContext apkFile
+            }
+
             val request = Request.Builder()
                 .url(downloadUrl)
                 .header("User-Agent", "Zniwatch-App")
@@ -122,14 +155,9 @@ object UpdateManager {
             val body = response.body ?: return@withContext null
             val contentLength = body.contentLength()
 
-            val updateDir = File(context.getExternalFilesDir(null), "updates")
-            if (!updateDir.exists()) {
-                updateDir.mkdirs()
-            }
-
-            val apkFile = File(updateDir, "update.apk")
-            if (apkFile.exists()) {
-                apkFile.delete()
+            val tempFile = File(updateDir, "${apkFile.name}.tmp")
+            if (tempFile.exists()) {
+                tempFile.delete()
             }
 
             var inputStream: InputStream? = null
@@ -137,9 +165,9 @@ object UpdateManager {
 
             try {
                 inputStream = body.byteStream()
-                outputStream = FileOutputStream(apkFile)
+                outputStream = FileOutputStream(tempFile)
 
-                val buffer = ByteArray(8 * 1024)
+                val buffer = ByteArray(16 * 1024)
                 var bytesRead: Int
                 var totalBytesRead = 0L
 
@@ -155,14 +183,33 @@ object UpdateManager {
                     }
                 }
                 outputStream.flush()
-                return@withContext apkFile
             } finally {
                 inputStream?.close()
                 outputStream?.close()
             }
+
+            if (tempFile.exists() && tempFile.length() > 0L) {
+                if (apkFile.exists()) {
+                    apkFile.delete()
+                }
+                tempFile.renameTo(apkFile)
+                return@withContext apkFile
+            }
+            return@withContext null
         } catch (e: Exception) {
             e.printStackTrace()
             null
+        }
+    }
+
+    fun openInBrowser(context: Context, url: String) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
