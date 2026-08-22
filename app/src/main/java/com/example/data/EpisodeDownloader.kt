@@ -114,7 +114,7 @@ object EpisodeDownloader {
                         downloadedSegments = obj.optInt("downloadedSegments", 0),
                         totalSegments = obj.optInt("totalSegments", 0),
                         status = status,
-                        errorMessage = obj.optString("errorMessage", null),
+                        errorMessage = obj.optString("errorMessage", "").ifEmpty { null },
                         savedFilePath = obj.optString("savedFilePath", "")
                     )
                     map[task.id] = task
