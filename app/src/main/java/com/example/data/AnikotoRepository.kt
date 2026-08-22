@@ -37,7 +37,13 @@ object AnikotoRepository {
     }
 
     private fun extractAnimeList(html: String, selector: String = ".item, .flw-item"): List<AnimeCardItem> {
+        if (html.contains("<title>Error</title>", ignoreCase = true)) {
+            return emptyList()
+        }
         val doc = Jsoup.parse(html)
+        if (doc.title().contains("Error", ignoreCase = true) || doc.select(".404-content, .error-page").isNotEmpty()) {
+            return emptyList()
+        }
         val elements = doc.select(selector)
         val list = mutableListOf<AnimeCardItem>()
 
@@ -151,9 +157,10 @@ object AnikotoRepository {
         return null
     }
 
-    suspend fun getCurrentlyAiring(): List<AnimeCardItem> = withContext(Dispatchers.IO) {
+    suspend fun getCurrentlyAiring(page: Int = 1): List<AnimeCardItem> = withContext(Dispatchers.IO) {
         try {
-            val req = buildRequest("$BASE_URL/status/currently-airing")
+            val url = if (page > 1) "$BASE_URL/status/currently-airing?page=$page" else "$BASE_URL/status/currently-airing"
+            val req = buildRequest(url)
             val resp = okHttpClient.newCall(req).execute()
             val html = resp.body?.string() ?: ""
             val list = extractAnimeList(html)
@@ -161,12 +168,13 @@ object AnikotoRepository {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        return@withContext ensureImages(fetchFromJikanTop())
+        return@withContext fetchFromAniListFiltered("Airing", "All", "All", page)
     }
 
-    suspend fun getLatestEpisodes(): List<AnimeCardItem> = withContext(Dispatchers.IO) {
+    suspend fun getLatestEpisodes(page: Int = 1): List<AnimeCardItem> = withContext(Dispatchers.IO) {
         try {
-            val req = buildRequest("$BASE_URL/home")
+            val url = if (page > 1) "$BASE_URL/recently-updated?page=$page" else "$BASE_URL/home"
+            val req = buildRequest(url)
             val resp = okHttpClient.newCall(req).execute()
             val html = resp.body?.string() ?: ""
             val list = extractAnimeList(html)
@@ -174,14 +182,15 @@ object AnikotoRepository {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        return@withContext ensureImages(fetchFromJikanTop())
+        return@withContext fetchFromAniListFiltered("Latest", "All", "All", page)
     }
 
-    suspend fun getTrending(): List<AnimeCardItem> = getLatestEpisodes()
+    suspend fun getTrending(page: Int = 1): List<AnimeCardItem> = getLatestEpisodes(page)
 
-    suspend fun getPopular(): List<AnimeCardItem> = withContext(Dispatchers.IO) {
+    suspend fun getPopular(page: Int = 1): List<AnimeCardItem> = withContext(Dispatchers.IO) {
         try {
-            val req = buildRequest("$BASE_URL/most-viewed")
+            val url = if (page > 1) "$BASE_URL/most-viewed?page=$page" else "$BASE_URL/most-viewed"
+            val req = buildRequest(url)
             val resp = okHttpClient.newCall(req).execute()
             val html = resp.body?.string() ?: ""
             val list = extractAnimeList(html)
@@ -189,12 +198,13 @@ object AnikotoRepository {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        return@withContext ensureImages(fetchFromJikanTop())
+        return@withContext fetchFromAniListFiltered("Popular", "All", "All", page)
     }
 
-    suspend fun getTopRated(): List<AnimeCardItem> = withContext(Dispatchers.IO) {
+    suspend fun getTopRated(page: Int = 1): List<AnimeCardItem> = withContext(Dispatchers.IO) {
         try {
-            val req = buildRequest("$BASE_URL/status/finished-airing")
+            val url = if (page > 1) "$BASE_URL/status/finished-airing?page=$page" else "$BASE_URL/status/finished-airing"
+            val req = buildRequest(url)
             val resp = okHttpClient.newCall(req).execute()
             val html = resp.body?.string() ?: ""
             val list = extractAnimeList(html)
@@ -202,12 +212,13 @@ object AnikotoRepository {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        return@withContext ensureImages(fetchFromJikanTop())
+        return@withContext fetchFromAniListFiltered("Top Rated", "All", "All", page)
     }
 
-    suspend fun getUpcoming(): List<AnimeCardItem> = withContext(Dispatchers.IO) {
+    suspend fun getUpcoming(page: Int = 1): List<AnimeCardItem> = withContext(Dispatchers.IO) {
         try {
-            val req = buildRequest("$BASE_URL/status/not-yet-aired")
+            val url = if (page > 1) "$BASE_URL/status/not-yet-aired?page=$page" else "$BASE_URL/status/not-yet-aired"
+            val req = buildRequest(url)
             val resp = okHttpClient.newCall(req).execute()
             val html = resp.body?.string() ?: ""
             val list = extractAnimeList(html)
@@ -215,12 +226,13 @@ object AnikotoRepository {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        return@withContext ensureImages(fetchFromJikanUpcoming())
+        return@withContext fetchFromAniListFiltered("Upcoming", "All", "All", page)
     }
 
-    suspend fun getCompleted(): List<AnimeCardItem> = withContext(Dispatchers.IO) {
+    suspend fun getCompleted(page: Int = 1): List<AnimeCardItem> = withContext(Dispatchers.IO) {
         try {
-            val req = buildRequest("$BASE_URL/status/finished-airing")
+            val url = if (page > 1) "$BASE_URL/status/finished-airing?page=$page" else "$BASE_URL/status/finished-airing"
+            val req = buildRequest(url)
             val resp = okHttpClient.newCall(req).execute()
             val html = resp.body?.string() ?: ""
             val list = extractAnimeList(html)
@@ -228,13 +240,14 @@ object AnikotoRepository {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        return@withContext ensureImages(fetchFromJikanTop())
+        return@withContext fetchFromAniListFiltered("Completed", "All", "All", page)
     }
 
-    suspend fun getByGenre(category: String): List<AnimeCardItem> = withContext(Dispatchers.IO) {
+    suspend fun getByGenre(category: String, page: Int = 1): List<AnimeCardItem> = withContext(Dispatchers.IO) {
         val slug = category.lowercase().trim().replace(" ", "-")
         try {
-            val req = buildRequest("$BASE_URL/genre/$slug")
+            val url = if (page > 1) "$BASE_URL/genre/$slug?page=$page" else "$BASE_URL/genre/$slug"
+            val req = buildRequest(url)
             val resp = okHttpClient.newCall(req).execute()
             val html = resp.body?.string() ?: ""
             val list = extractAnimeList(html)
@@ -242,7 +255,222 @@ object AnikotoRepository {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        return@withContext fetchFromJikanGenre(category)
+        return@withContext fetchFromAniListFiltered(category, "All", "All", page)
+    }
+
+    suspend fun getFilteredAnime(
+        categoryTitle: String,
+        typeFilter: String = "All",
+        yearFilter: String = "All",
+        page: Int = 1
+    ): List<AnimeCardItem> = withContext(Dispatchers.IO) {
+        val activeYear = if (yearFilter != "All" && yearFilter != "All Years") yearFilter else if (categoryTitle.matches(Regex("\\d{4}"))) categoryTitle else "All"
+
+        if (activeYear != "All") {
+            return@withContext fetchFromAniListFiltered(categoryTitle, typeFilter, activeYear, page)
+        }
+
+        if (typeFilter == "All" && activeYear == "All") {
+            return@withContext when {
+                categoryTitle.contains("Latest", ignoreCase = true) || categoryTitle.contains("Trending", ignoreCase = true) -> getLatestEpisodes(page)
+                categoryTitle.contains("Popular", ignoreCase = true) -> getPopular(page)
+                categoryTitle.contains("Top Rated", ignoreCase = true) -> getTopRated(page)
+                categoryTitle.contains("Upcoming", ignoreCase = true) -> getUpcoming(page)
+                categoryTitle.contains("Completed", ignoreCase = true) || categoryTitle.contains("Finished", ignoreCase = true) -> getCompleted(page)
+                categoryTitle.contains("Airing", ignoreCase = true) -> getCurrentlyAiring(page)
+                else -> getByGenre(categoryTitle, page)
+            }
+        }
+
+        val typeParam = when {
+            typeFilter.equals("TV", ignoreCase = true) -> "tv"
+            typeFilter.equals("Movie", ignoreCase = true) -> "movie"
+            else -> ""
+        }
+
+        val isGenre = !categoryTitle.contains("Latest", ignoreCase = true) &&
+                !categoryTitle.contains("Trending", ignoreCase = true) &&
+                !categoryTitle.contains("Popular", ignoreCase = true) &&
+                !categoryTitle.contains("Top Rated", ignoreCase = true) &&
+                !categoryTitle.contains("Upcoming", ignoreCase = true) &&
+                !categoryTitle.contains("Completed", ignoreCase = true) &&
+                !categoryTitle.contains("Finished", ignoreCase = true) &&
+                !categoryTitle.contains("Airing", ignoreCase = true) &&
+                !categoryTitle.matches(Regex("\\d{4}"))
+
+        val genreSlug = if (isGenre) categoryTitle.lowercase().trim().replace(" ", "-") else ""
+
+        val candidatesUrls = mutableListOf<String>()
+
+        fun appendPage(u: String): String {
+            return if (page <= 1) u else if (u.contains("?")) "$u&page=$page" else "$u?page=$page"
+        }
+
+        if (genreSlug.isNotEmpty()) {
+            candidatesUrls.add(appendPage("$BASE_URL/genre/$genreSlug${if (typeParam.isNotEmpty()) "?type=$typeParam" else ""}"))
+            candidatesUrls.add(appendPage("$BASE_URL/filter?genre=$genreSlug${if (typeParam.isNotEmpty()) "&type=$typeParam" else ""}"))
+        } else {
+            val sortOrStatus = when {
+                categoryTitle.contains("Popular", ignoreCase = true) -> "sort=most_viewed"
+                categoryTitle.contains("Top Rated", ignoreCase = true) -> "sort=score"
+                categoryTitle.contains("Airing", ignoreCase = true) -> "status=currently_airing"
+                categoryTitle.contains("Completed", ignoreCase = true) -> "status=finished_airing"
+                categoryTitle.contains("Upcoming", ignoreCase = true) -> "status=not_yet_aired"
+                else -> ""
+            }
+            candidatesUrls.add(appendPage("$BASE_URL/filter?$sortOrStatus${if (typeParam.isNotEmpty()) "&type=$typeParam" else ""}"))
+        }
+
+        for (url in candidatesUrls) {
+            try {
+                val req = buildRequest(url)
+                val resp = okHttpClient.newCall(req).execute()
+                val html = resp.body?.string() ?: ""
+                val list = extractAnimeList(html)
+                if (list.isNotEmpty()) {
+                    val filtered = if (typeParam.isNotEmpty()) {
+                        list.filter { it.type.equals(typeFilter, ignoreCase = true) }.ifEmpty { list }
+                    } else list
+                    return@withContext ensureImages(filtered)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        return@withContext fetchFromAniListFiltered(categoryTitle, typeFilter, activeYear, page)
+    }
+
+    private fun fetchFromAniListFiltered(categoryTitle: String, typeFilter: String, yearFilter: String, page: Int = 1): List<AnimeCardItem> {
+        return try {
+            val activeYearInt = if (yearFilter != "All" && yearFilter != "All Years") {
+                yearFilter.toIntOrNull()
+            } else if (categoryTitle.matches(Regex("\\d{4}"))) {
+                categoryTitle.toIntOrNull()
+            } else null
+
+            val format = when {
+                typeFilter.equals("Movie", ignoreCase = true) -> "MOVIE"
+                typeFilter.equals("TV", ignoreCase = true) -> "TV"
+                else -> null
+            }
+
+            val isGenre = !categoryTitle.contains("Latest", ignoreCase = true) &&
+                    !categoryTitle.contains("Trending", ignoreCase = true) &&
+                    !categoryTitle.contains("Popular", ignoreCase = true) &&
+                    !categoryTitle.contains("Top Rated", ignoreCase = true) &&
+                    !categoryTitle.contains("Upcoming", ignoreCase = true) &&
+                    !categoryTitle.contains("Completed", ignoreCase = true) &&
+                    !categoryTitle.contains("Finished", ignoreCase = true) &&
+                    !categoryTitle.contains("Airing", ignoreCase = true) &&
+                    !categoryTitle.matches(Regex("\\d{4}"))
+
+            val sortOption = when {
+                categoryTitle.contains("Top Rated", ignoreCase = true) -> "[SCORE_DESC]"
+                categoryTitle.contains("Trending", ignoreCase = true) -> "[TRENDING_DESC]"
+                else -> "[POPULARITY_DESC]"
+            }
+
+            val statusOption = when {
+                categoryTitle.contains("Airing", ignoreCase = true) -> "RELEASING"
+                categoryTitle.contains("Completed", ignoreCase = true) || categoryTitle.contains("Finished", ignoreCase = true) -> "FINISHED"
+                categoryTitle.contains("Upcoming", ignoreCase = true) -> "NOT_YET_RELEASED"
+                else -> null
+            }
+
+            val query = """
+                query (${'$'}page: Int, ${'$'}seasonYear: Int, ${'$'}startDate_greater: FuzzyDateInt, ${'$'}startDate_lesser: FuzzyDateInt, ${'$'}genre: String, ${'$'}format: MediaFormat, ${'$'}status: MediaStatus) {
+                  Page(page: ${'$'}page, perPage: 50) {
+                    media(
+                      seasonYear: ${'$'}seasonYear,
+                      startDate_greater: ${'$'}startDate_greater,
+                      startDate_lesser: ${'$'}startDate_lesser,
+                      genre: ${'$'}genre,
+                      format: ${'$'}format,
+                      status: ${'$'}status,
+                      sort: $sortOption,
+                      type: ANIME
+                    ) {
+                      id
+                      title {
+                        english
+                        romaji
+                      }
+                      coverImage {
+                        extraLarge
+                        large
+                      }
+                      averageScore
+                      format
+                      startDate {
+                        year
+                      }
+                    }
+                  }
+                }
+            """.trimIndent()
+
+            val variables = JSONObject().apply {
+                put("page", page)
+                if (activeYearInt != null) {
+                    put("startDate_greater", activeYearInt * 10000)
+                    put("startDate_lesser", activeYearInt * 10000 + 1231)
+                }
+                if (isGenre) put("genre", categoryTitle)
+                if (format != null) put("format", format)
+                if (statusOption != null) put("status", statusOption)
+            }
+
+            val json = JSONObject().apply {
+                put("query", query)
+                put("variables", variables)
+            }
+
+            val mediaType = "application/json".toMediaType()
+            val body = json.toString().toRequestBody(mediaType)
+            val req = Request.Builder()
+                .url("https://graphql.anilist.co")
+                .post(body)
+                .build()
+
+            val resp = okHttpClient.newCall(req).execute()
+            val respStr = resp.body?.string() ?: ""
+            val data = JSONObject(respStr).optJSONObject("data")?.optJSONObject("Page")?.optJSONArray("media") ?: return emptyList()
+
+            val list = mutableListOf<AnimeCardItem>()
+            for (i in 0 until data.length()) {
+                val item = data.getJSONObject(i)
+                val startDateYear = item.optJSONObject("startDate")?.optInt("year", 0) ?: 0
+                if (activeYearInt != null && startDateYear > 0 && startDateYear != activeYearInt) {
+                    continue
+                }
+                val titleObj = item.optJSONObject("title")
+                val title = titleObj?.optString("english")?.ifEmpty { null }
+                    ?: titleObj?.optString("romaji")?.ifEmpty { null }
+                    ?: "Anime"
+                val coverObj = item.optJSONObject("coverImage")
+                val imageUrl = coverObj?.optString("extraLarge")?.ifEmpty { null }
+                    ?: coverObj?.optString("large") ?: ""
+                val score = item.optInt("averageScore", 85) / 10.0
+                val fmt = item.optString("format", "TV")
+                val id = item.optString("id")
+
+                list.add(
+                    AnimeCardItem(
+                        id = id,
+                        title = title,
+                        rating = String.format("%.1f", if (score > 0) score else 8.5),
+                        imageResId = 0,
+                        type = if (fmt.contains("MOVIE", ignoreCase = true)) "Movie" else "TV",
+                        imageUrl = imageUrl
+                    )
+                )
+            }
+            list
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList()
+        }
     }
 
     suspend fun searchAnime(keyword: String): List<AnimeCardItem> = withContext(Dispatchers.IO) {
@@ -1306,8 +1534,10 @@ object AnikotoRepository {
     private suspend fun enrichEpisodeThumbnails(animeTitle: String, episodes: List<EpisodeItem>): List<EpisodeItem> {
         if (episodes.isEmpty()) return episodes
         try {
-            val thumbnailMap = AniListRepository.getEpisodeThumbnailsMap(animeTitle)
-            if (thumbnailMap.isNotEmpty()) {
+            val thumbnailMap = kotlinx.coroutines.withTimeoutOrNull(2000L) {
+                AniListRepository.getEpisodeThumbnailsMap(animeTitle)
+            }
+            if (!thumbnailMap.isNullOrEmpty()) {
                 return episodes.map { ep ->
                     val thumb = thumbnailMap[ep.episodeNumber]
                     if (!thumb.isNullOrEmpty()) {

@@ -16,16 +16,25 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.CalendarToday
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,12 +43,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.AnimeCardItem
@@ -55,35 +66,79 @@ fun ViewMoreGridScreen(
   onAnimeClick: (AnimeCardItem) -> Unit = {}
 ) {
   var selectedTypeFilter by remember { mutableStateOf("All") } // "All", "TV", "Movie"
+  var selectedYearFilter by remember {
+    mutableStateOf(if (categoryTitle.matches(Regex("\\d{4}"))) categoryTitle else "All")
+  }
+  var isYearDropdownExpanded by remember { mutableStateOf(false) }
   var isLoading by remember { mutableStateOf(true) }
+  var isLoadingMore by remember { mutableStateOf(false) }
+  var currentPage by remember { mutableStateOf(1) }
+  var hasMorePages by remember { mutableStateOf(true) }
 
+  val coroutineScope = rememberCoroutineScope()
   val displayList = remember { mutableStateListOf<AnimeCardItem>() }
 
-  // Real backend call depending on categoryTitle
-  LaunchedEffect(categoryTitle) {
-    isLoading = true
-    try {
-      val resultList = when {
-        categoryTitle.contains("Latest", ignoreCase = true) || categoryTitle.contains("Trending", ignoreCase = true) -> AnikotoRepository.getLatestEpisodes()
-        categoryTitle.contains("Popular", ignoreCase = true) -> AnikotoRepository.getPopular()
-        categoryTitle.contains("Top Rated", ignoreCase = true) -> AnikotoRepository.getTopRated()
-        categoryTitle.contains("Upcoming", ignoreCase = true) -> AnikotoRepository.getUpcoming()
-        categoryTitle.contains("Completed", ignoreCase = true) || categoryTitle.contains("Finished", ignoreCase = true) -> AnikotoRepository.getCompleted()
-        categoryTitle.contains("Airing", ignoreCase = true) -> AnikotoRepository.getCurrentlyAiring()
-        else -> AnikotoRepository.getByGenre(categoryTitle)
+  val yearOptions = remember {
+    listOf(
+      "All Years", "2026", "2025", "2024", "2023", "2022", "2021", "2020",
+      "2019", "2018", "2017", "2016", "2015", "2014", "2013", "2012", "2011",
+      "2010", "2005", "2000"
+    )
+  }
+
+  // Helper to load next page
+  val loadNextPage: () -> Unit = {
+    if (!isLoadingMore && hasMorePages && !isLoading) {
+      isLoadingMore = true
+      coroutineScope.launch {
+        try {
+          val nextPage = currentPage + 1
+          val resultList = AnikotoRepository.getFilteredAnime(
+            categoryTitle = categoryTitle,
+            typeFilter = selectedTypeFilter,
+            yearFilter = selectedYearFilter,
+            page = nextPage
+          )
+          val existingTitles = displayList.map { it.title.lowercase().trim() }.toSet()
+          val uniqueList = resultList.filter { it.title.lowercase().trim() !in existingTitles }
+
+          if (uniqueList.isNotEmpty()) {
+            displayList.addAll(uniqueList)
+            currentPage = nextPage
+          } else {
+            hasMorePages = false
+          }
+        } catch (e: Exception) {
+          e.printStackTrace()
+        } finally {
+          isLoadingMore = false
+        }
       }
+    }
+  }
+
+  // Fetch initial page whenever categoryTitle, selectedTypeFilter, or selectedYearFilter changes
+  LaunchedEffect(categoryTitle, selectedTypeFilter, selectedYearFilter) {
+    isLoading = true
+    currentPage = 1
+    hasMorePages = true
+    try {
+      val resultList = AnikotoRepository.getFilteredAnime(
+        categoryTitle = categoryTitle,
+        typeFilter = selectedTypeFilter,
+        yearFilter = selectedYearFilter,
+        page = 1
+      )
       displayList.clear()
       displayList.addAll(resultList)
+      if (resultList.isEmpty() || resultList.size < 12) {
+        hasMorePages = false
+      }
     } catch (e: Exception) {
       e.printStackTrace()
     } finally {
       isLoading = false
     }
-  }
-
-  val filteredDisplayList = remember(displayList.toList(), selectedTypeFilter) {
-    if (selectedTypeFilter == "All") displayList
-    else displayList.filter { it.type.equals(selectedTypeFilter, ignoreCase = true) }
   }
 
   Column(
@@ -110,7 +165,7 @@ fun ViewMoreGridScreen(
       Spacer(modifier = Modifier.width(8.dp))
 
       Text(
-        text = categoryTitle,
+        text = if (categoryTitle.matches(Regex("\\d{4}"))) "Anime of $categoryTitle" else categoryTitle,
         color = Color.White,
         fontSize = 22.sp,
         fontFamily = PremiumTitleFont,
@@ -121,15 +176,18 @@ fun ViewMoreGridScreen(
       )
     }
 
-    // Top Filter Buttons (All, TV, Movie)
-    Row(
+    // Top Filter Bar: Type Chips & Year Dropdown Button
+    LazyRow(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(horizontal = 16.dp, vertical = 6.dp),
-      horizontalArrangement = Arrangement.spacedBy(10.dp)
+        .padding(vertical = 6.dp),
+      contentPadding = PaddingValues(horizontal = 16.dp),
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
+      verticalAlignment = Alignment.CenterVertically
     ) {
-      val filterOptions = listOf("All", "TV", "Movie")
-      filterOptions.forEach { option ->
+      // Type Filters (All, TV, Movie)
+      val typeOptions = listOf("All", "TV", "Movie")
+      items(typeOptions) { option ->
         val isSelected = selectedTypeFilter == option
         Surface(
           shape = RoundedCornerShape(16.dp),
@@ -147,6 +205,74 @@ fun ViewMoreGridScreen(
           )
         }
       }
+
+      // Year Dropdown Button
+      item {
+        Box {
+          val isYearActive = selectedYearFilter != "All" && selectedYearFilter != "All Years"
+          Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = if (isYearActive) Color.White else Color(0xFF222226),
+            border = BorderStroke(1.dp, if (isYearActive) Color.White else Color(0xFF333333)),
+            modifier = Modifier.clickable { isYearDropdownExpanded = true }
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Filled.CalendarToday,
+                contentDescription = null,
+                tint = if (isYearActive) Color.Black else Color.White,
+                modifier = Modifier.size(13.dp)
+              )
+              Spacer(modifier = Modifier.width(6.dp))
+              Text(
+                text = if (isYearActive) "Year: $selectedYearFilter" else "Year",
+                color = if (isYearActive) Color.Black else Color.White,
+                fontSize = 13.sp,
+                fontFamily = PremiumTitleFont,
+                fontWeight = FontWeight.Bold
+              )
+              Spacer(modifier = Modifier.width(4.dp))
+              Icon(
+                imageVector = Icons.Filled.ArrowDropDown,
+                contentDescription = "Expand Years",
+                tint = if (isYearActive) Color.Black else Color.White,
+                modifier = Modifier.size(18.dp)
+              )
+            }
+          }
+
+          DropdownMenu(
+            expanded = isYearDropdownExpanded,
+            onDismissRequest = { isYearDropdownExpanded = false },
+            modifier = Modifier
+              .background(Color(0xFF1E1E22))
+              .height(280.dp)
+          ) {
+            yearOptions.forEach { year ->
+              val isSelectedYear = (selectedYearFilter == year) || (year == "All Years" && (selectedYearFilter == "All" || selectedYearFilter == "All Years"))
+              DropdownMenuItem(
+                text = {
+                  Text(
+                    text = year,
+                    color = Color.White,
+                    fontWeight = if (isSelectedYear) FontWeight.Bold else FontWeight.Normal,
+                    fontSize = 14.sp,
+                    fontFamily = PremiumBodyFont
+                  )
+                },
+                onClick = {
+                  selectedYearFilter = if (year == "All Years") "All" else year
+                  isYearDropdownExpanded = false
+                },
+                modifier = Modifier.background(if (isSelectedYear) Color(0xFF383842) else Color.Transparent)
+              )
+            }
+          }
+        }
+      }
     }
 
     Spacer(modifier = Modifier.height(6.dp))
@@ -160,6 +286,20 @@ fun ViewMoreGridScreen(
       ) {
         CircularProgressIndicator(color = Color.White, modifier = Modifier.size(36.dp))
       }
+    } else if (displayList.isEmpty()) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(top = 60.dp),
+        contentAlignment = Alignment.TopCenter
+      ) {
+        Text(
+          text = "No anime found for selected filters.",
+          color = Color(0xFFAAAAAA),
+          fontSize = 14.sp,
+          fontFamily = PremiumBodyFont
+        )
+      }
     } else {
       // Adaptive Cards Grid for varying screen widths
       LazyVerticalGrid(
@@ -169,7 +309,12 @@ fun ViewMoreGridScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp),
         modifier = Modifier.fillMaxSize()
       ) {
-        items(filteredDisplayList) { anime ->
+        itemsIndexed(displayList) { index, anime ->
+          if (index >= displayList.size - 6 && !isLoadingMore && hasMorePages && !isLoading) {
+            LaunchedEffect(index) {
+              loadNextPage()
+            }
+          }
           Column(
             modifier = Modifier
               .fillMaxWidth()
@@ -234,7 +379,47 @@ fun ViewMoreGridScreen(
             )
           }
         }
+
+        // Bottom Loader / Load More Button
+        if (isLoadingMore) {
+          item(span = { GridItemSpan(maxLineSpan) }) {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp),
+              contentAlignment = Alignment.Center
+            ) {
+              CircularProgressIndicator(color = Color.White, modifier = Modifier.size(28.dp))
+            }
+          }
+        } else if (hasMorePages && displayList.isNotEmpty()) {
+          item(span = { GridItemSpan(maxLineSpan) }) {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp),
+              contentAlignment = Alignment.Center
+            ) {
+              Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = Color(0xFF222226),
+                border = BorderStroke(1.dp, Color(0xFF444444)),
+                modifier = Modifier.clickable { loadNextPage() }
+              ) {
+                Text(
+                  text = "Load More Anime",
+                  color = Color.White,
+                  fontSize = 13.sp,
+                  fontFamily = PremiumTitleFont,
+                  fontWeight = FontWeight.Bold,
+                  modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp)
+                )
+              }
+            }
+          }
+        }
       }
     }
   }
 }
+

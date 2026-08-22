@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import kotlinx.coroutines.async
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -60,10 +61,14 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.ActiveDownloadStatus
+import com.example.data.ActiveDownloadTask
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -88,6 +93,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.AniListRepository
 import com.example.data.AnikotoRepository
 import com.example.data.AnimeCardItem
+import com.example.data.EpisodeDownloader
 import com.example.data.EpisodeItem
 import com.example.data.EpisodeStreamResult
 import com.example.data.PremiumBodyFont
@@ -142,26 +148,35 @@ fun EpisodeListScreen(
 
         isLoading = true
         isEpisodesLoading = true
-        try {
-            val fetchedImages = AniListRepository.getAnimeGalleryImages(
-                title = anime.title,
-                defaultBanner = anime.imageUrl,
-                defaultCover = anime.imageUrl
-            )
-            images = if (fetchedImages.isNotEmpty()) fetchedImages else listOf(anime.imageUrl)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            images = listOf(anime.imageUrl)
-        } finally {
-            isLoading = false
-        }
 
-        try {
-            val fetchedEp = AnikotoRepository.getEpisodes(anime.title, anime.id)
-            episodes = fetchedEp
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
+        kotlinx.coroutines.coroutineScope {
+            val imagesDeferred = async {
+                try {
+                    AniListRepository.getAnimeGalleryImages(
+                        title = anime.title,
+                        defaultBanner = anime.imageUrl,
+                        defaultCover = anime.imageUrl
+                    )
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    emptyList()
+                }
+            }
+
+            val episodesDeferred = async {
+                try {
+                    AnikotoRepository.getEpisodes(anime.title, anime.id)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    emptyList()
+                }
+            }
+
+            val fetchedImages = imagesDeferred.await()
+            images = if (fetchedImages.isNotEmpty()) fetchedImages else listOf(anime.imageUrl)
+            isLoading = false
+
+            episodes = episodesDeferred.await()
             isEpisodesLoading = false
         }
     }
@@ -169,12 +184,30 @@ fun EpisodeListScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     var selectedRangeIndex by remember(episodes.size) { mutableIntStateOf(0) }
     var isRangeDropdownExpanded by remember { mutableStateOf(false) }
+    var selectedDownloadRangeIndex by remember(episodes.size) { mutableIntStateOf(0) }
+    var isDownloadRangeDropdownExpanded by remember { mutableStateOf(false) }
     var selectedEpisodeForAudio by remember { mutableStateOf<EpisodeItem?>(null) }
+    var selectedEpisodeForDownload by remember { mutableStateOf<EpisodeItem?>(null) }
     var activePlayingStream by remember { mutableStateOf<ActivePlayerState?>(null) }
     var isFetchingStream by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
     var hasAutoPlayed by remember(anime.id) { mutableStateOf(false) }
+
+    val activeDownloadsState by EpisodeDownloader.activeDownloads.collectAsStateWithLifecycle()
+    val lastCompletedMap by EpisodeDownloader.lastCompletedEpisodeMap.collectAsStateWithLifecycle()
+
+    val currentActiveTask = activeDownloadsState.values.find {
+        it.animeTitle.equals(anime.title, ignoreCase = true) &&
+        (it.status == ActiveDownloadStatus.DOWNLOADING || it.status == ActiveDownloadStatus.FETCHING_PLAYLIST)
+    }
+
+    val lastCompletedEpNum = lastCompletedMap[anime.title]
+        ?: remember(anime.title, activeDownloadsState) {
+            val downloadedList = EpisodeDownloader.getDownloadedEpisodes(context)
+            downloadedList.filter { it.animeTitle.equals(anime.title, ignoreCase = true) }
+                .maxOfOrNull { it.episodeNumber }
+        }
 
     val playEpisodeStream: (EpisodeItem, String, Long) -> Unit = remember(anime.title) {
         { ep, category, startPos ->
@@ -242,6 +275,47 @@ fun EpisodeListScreen(
             onSelectLanguage = { category ->
                 selectedEpisodeForAudio = null
                 playEpisodeStream(ep, category, 0L)
+            }
+        )
+    }
+
+    if (selectedEpisodeForDownload != null) {
+        val ep = selectedEpisodeForDownload!!
+        DownloadServerSelectionBottomSheet(
+            episode = ep,
+            animeTitle = anime.title,
+            onDismiss = { selectedEpisodeForDownload = null },
+            onSelectServer = { server ->
+                selectedEpisodeForDownload = null
+                coroutineScope.launch {
+                    isFetchingStream = true
+                    try {
+                        val streamResult = AnikotoRepository.fetchStreamFromLinkId(
+                            linkId = server.linkId,
+                            animeTitle = anime.title,
+                            category = server.type,
+                            episodeId = ep.id,
+                            episodeNumber = ep.episodeNumber
+                        )
+                        EpisodeDownloader.startDownload(
+                            context = context,
+                            animeTitle = anime.title,
+                            episode = ep,
+                            server = server,
+                            streamResult = streamResult,
+                            animeImageUrl = anime.imageUrl
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        android.widget.Toast.makeText(
+                            context,
+                            "Download error: ${e.localizedMessage}",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    } finally {
+                        isFetchingStream = false
+                    }
+                }
             }
         )
     }
@@ -454,89 +528,6 @@ fun EpisodeListScreen(
                             fontFamily = PremiumBodyFont
                         )
                     }
-
-                    if (historyItem != null) {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(78.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .clickable {
-                                    val targetEpNumber = historyItem!!.episodeNumber.ifEmpty { historyItem!!.episodeId }
-                                    val targetEp = episodes.find { ep ->
-                                        ep.id == historyItem!!.episodeId ||
-                                        ep.episodeNumber.toString() == targetEpNumber ||
-                                        ep.id.endsWith(targetEpNumber)
-                                    } ?: run {
-                                        val num = targetEpNumber.toIntOrNull()
-                                        if (num != null) episodes.find { it.episodeNumber == num } else null
-                                    }
-                                    if (targetEp != null) {
-                                        playEpisodeStream(targetEp, historyItem!!.category, historyItem!!.playbackPosition)
-                                    } else if (episodes.isNotEmpty()) {
-                                        playEpisodeStream(episodes.first(), historyItem!!.category, historyItem!!.playbackPosition)
-                                    }
-                                }
-                        ) {
-                            AnimeCardImage(
-                                imageUrl = historyItem!!.imageUrl.ifEmpty { anime.imageUrl },
-                                imageResId = 0,
-                                contentDescription = "Continue Watching",
-                                modifier = Modifier.fillMaxSize()
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(
-                                        Brush.horizontalGradient(
-                                            colors = listOf(
-                                                Color(0xEE000000),
-                                                Color(0xBB000000),
-                                                Color(0x44000000)
-                                            )
-                                        )
-                                    )
-                                    .border(1.dp, Brush.linearGradient(listOf(Color(0x66FFFFFF), Color(0x11FFFFFF))), RoundedCornerShape(16.dp))
-                            )
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(horizontal = 18.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(44.dp)
-                                        .background(Color.White, CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.PlayArrow,
-                                        contentDescription = "Play",
-                                        tint = Color.Black,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(14.dp))
-                                Column {
-                                    Text(
-                                        text = "Continue : Episode - ${historyItem!!.episodeNumber}",
-                                        color = Color.White,
-                                        fontSize = 16.sp,
-                                        fontFamily = PremiumTitleFont,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = "Resume from where you left",
-                                        color = Color(0xFFDDDDDD),
-                                        fontSize = 13.sp,
-                                        fontFamily = PremiumBodyFont
-                                    )
-                                }
-                            }
-                        }
-                    }
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
@@ -572,6 +563,88 @@ fun EpisodeListScreen(
                                     .fillMaxWidth()
                                     .padding(horizontal = 20.dp, vertical = 20.dp)
                             ) {
+                                if (historyItem != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(78.dp)
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .clickable {
+                                                val targetEpNumber = historyItem!!.episodeNumber.ifEmpty { historyItem!!.episodeId }
+                                                val targetEp = episodes.find { ep ->
+                                                    ep.id == historyItem!!.episodeId ||
+                                                    ep.episodeNumber.toString() == targetEpNumber ||
+                                                    ep.id.endsWith(targetEpNumber)
+                                                } ?: run {
+                                                    val num = targetEpNumber.toIntOrNull()
+                                                    if (num != null) episodes.find { it.episodeNumber == num } else null
+                                                }
+                                                if (targetEp != null) {
+                                                    playEpisodeStream(targetEp, historyItem!!.category, historyItem!!.playbackPosition)
+                                                } else if (episodes.isNotEmpty()) {
+                                                    playEpisodeStream(episodes.first(), historyItem!!.category, historyItem!!.playbackPosition)
+                                                }
+                                            }
+                                    ) {
+                                        AnimeCardImage(
+                                            imageUrl = historyItem!!.imageUrl.ifEmpty { anime.imageUrl },
+                                            imageResId = 0,
+                                            contentDescription = "Continue Watching",
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(
+                                                    Brush.horizontalGradient(
+                                                        colors = listOf(
+                                                            Color(0xEE000000),
+                                                            Color(0xBB000000),
+                                                            Color(0x44000000)
+                                                        )
+                                                    )
+                                                )
+                                                .border(1.dp, Brush.linearGradient(listOf(Color(0x66FFFFFF), Color(0x11FFFFFF))), RoundedCornerShape(16.dp))
+                                        )
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(horizontal = 18.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(44.dp)
+                                                    .background(Color.White, CircleShape),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.PlayArrow,
+                                                    contentDescription = "Play",
+                                                    tint = Color.Black,
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(14.dp))
+                                            Column {
+                                                Text(
+                                                    text = "Continue : Episode - ${historyItem!!.episodeNumber}",
+                                                    color = Color.White,
+                                                    fontSize = 16.sp,
+                                                    fontFamily = PremiumTitleFont,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = "Resume from where you left",
+                                                    color = Color(0xFFDDDDDD),
+                                                    fontSize = 13.sp,
+                                                    fontFamily = PremiumBodyFont
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                }
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -709,51 +782,302 @@ fun EpisodeListScreen(
                             EpisodeCommentsSection(animeTitle = anime.title)
                         }
                         2 -> {
+                            val rangeChunkSize = 50
+                            val totalRanges = (episodes.size + rangeChunkSize - 1) / rangeChunkSize
+                            val rangeLabels = (0 until totalRanges).map { idx ->
+                                val start = idx * rangeChunkSize + 1
+                                val end = minOf((idx + 1) * rangeChunkSize, episodes.size)
+                                "$start - $end"
+                            }
+                            val displayedEpisodes = if (episodes.size > 50) {
+                                val startIndex = (selectedDownloadRangeIndex * rangeChunkSize).coerceAtMost(episodes.size)
+                                val endIndex = ((selectedDownloadRangeIndex + 1) * rangeChunkSize).coerceAtMost(episodes.size)
+                                episodes.subList(startIndex, endIndex)
+                            } else {
+                                episodes
+                            }
+
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 20.dp, vertical = 20.dp)
                             ) {
-                                Text(
-                                    text = "Download",
-                                    color = Color.White,
-                                    fontSize = 16.sp,
-                                    fontFamily = PremiumTitleFont,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Spacer(modifier = Modifier.height(14.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(150.dp)
-                                        .background(Color(0xFF141418), RoundedCornerShape(12.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.Center
+                                if (currentActiveTask != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = 16.dp)
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .border(1.dp, Brush.linearGradient(listOf(Color(0x66FFFFFF), Color(0x11FFFFFF))), RoundedCornerShape(16.dp))
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Download,
-                                            contentDescription = "Download Coming Soon",
-                                            tint = Color(0xFF666677),
-                                            modifier = Modifier.size(36.dp)
+                                        AnimeCardImage(
+                                            imageUrl = currentActiveTask.animeImageUrl.ifEmpty { anime.imageUrl },
+                                            imageResId = 0,
+                                            contentDescription = "Background Image",
+                                            modifier = Modifier.matchParentSize()
                                         )
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Text(
-                                            text = "Coming Soon",
-                                            color = Color.White,
-                                            fontSize = 16.sp,
-                                            fontFamily = PremiumTitleFont,
-                                            fontWeight = FontWeight.Bold
+                                        Box(
+                                            modifier = Modifier
+                                                .matchParentSize()
+                                                .background(
+                                                    Brush.horizontalGradient(
+                                                        colors = listOf(
+                                                            Color(0xF2000000),
+                                                            Color(0xD9000000),
+                                                            Color(0x99000000)
+                                                        )
+                                                    )
+                                                )
                                         )
-                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Column(modifier = Modifier.padding(16.dp)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(44.dp)
+                                                        .background(Color.White, CircleShape),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    CircularProgressIndicator(
+                                                        progress = { (currentActiveTask.progress / 100f).coerceIn(0f, 1f) },
+                                                        color = Color.Black,
+                                                        strokeWidth = 3.dp,
+                                                        modifier = Modifier.size(28.dp)
+                                                    )
+                                                    Icon(
+                                                        imageVector = Icons.Filled.Download,
+                                                        contentDescription = "Downloading",
+                                                        tint = Color.Black,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.width(14.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = "Downloading Episode ${currentActiveTask.episodeNumber}",
+                                                        color = Color.White,
+                                                        fontSize = 15.sp,
+                                                        fontFamily = PremiumTitleFont,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                    Spacer(modifier = Modifier.height(2.dp))
+                                                    Text(
+                                                        text = "${currentActiveTask.progress}% • ${if (currentActiveTask.status == ActiveDownloadStatus.FETCHING_PLAYLIST) "Fetching playlist..." else "Downloading..."}",
+                                                        color = Color(0xFFDDDDDD),
+                                                        fontSize = 12.5.sp,
+                                                        fontFamily = PremiumBodyFont
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(10.dp))
+                                            LinearProgressIndicator(
+                                                progress = { (currentActiveTask.progress / 100f).coerceIn(0f, 1f) },
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(6.dp)
+                                                    .clip(CircleShape),
+                                                color = Color.White,
+                                                trackColor = Color(0x66FFFFFF)
+                                            )
+                                        }
+                                    }
+                                } else if (lastCompletedEpNum != null) {
+                                    val nextEpToDownload = episodes.find { it.episodeNumber == lastCompletedEpNum + 1 }
+                                    if (nextEpToDownload != null) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(bottom = 16.dp)
+                                                .height(78.dp)
+                                                .clip(RoundedCornerShape(16.dp))
+                                                .border(1.dp, Brush.linearGradient(listOf(Color(0x66FFFFFF), Color(0x11FFFFFF))), RoundedCornerShape(16.dp))
+                                                .clickable {
+                                                    selectedEpisodeForDownload = nextEpToDownload
+                                                }
+                                        ) {
+                                            AnimeCardImage(
+                                                imageUrl = anime.imageUrl,
+                                                imageResId = 0,
+                                                contentDescription = "Download Next Episode",
+                                                modifier = Modifier.matchParentSize()
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .matchParentSize()
+                                                    .background(
+                                                        Brush.horizontalGradient(
+                                                            colors = listOf(
+                                                                Color(0xF2000000),
+                                                                Color(0xCC000000),
+                                                                Color(0x66000000)
+                                                            )
+                                                        )
+                                                    )
+                                            )
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .padding(horizontal = 18.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(44.dp)
+                                                        .background(Color.White, CircleShape),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.Download,
+                                                        contentDescription = "Download Next",
+                                                        tint = Color.Black,
+                                                        modifier = Modifier.size(24.dp)
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.width(14.dp))
+                                                Column {
+                                                    Text(
+                                                        text = "Download Next Ep - ${nextEpToDownload.episodeNumber}",
+                                                        color = Color.White,
+                                                        fontSize = 16.sp,
+                                                        fontFamily = PremiumTitleFont,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                    Text(
+                                                        text = "Episode $lastCompletedEpNum downloaded • Tap to download Ep ${nextEpToDownload.episodeNumber}",
+                                                        color = Color(0xFFDDDDDD),
+                                                        fontSize = 12.5.sp,
+                                                        fontFamily = PremiumBodyFont
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "Download Episode",
+                                        color = Color.White,
+                                        fontSize = 16.sp,
+                                        fontFamily = PremiumTitleFont,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (episodes.isNotEmpty()) {
                                         Text(
-                                            text = "Episode downloads will be available in a future update.",
-                                            color = Color(0xFF777788),
+                                            text = "${episodes.size} Episodes",
+                                            color = Color(0xFF888899),
                                             fontSize = 12.sp,
                                             fontFamily = PremiumBodyFont
                                         )
+                                    }
+                                }
+
+                                // Range dropdown for >50 episodes
+                                if (episodes.size > 50) {
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Box {
+                                        Surface(
+                                            onClick = { isDownloadRangeDropdownExpanded = true },
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = Color(0xFF1B1B22),
+                                            border = BorderStroke(1.dp, Color(0xFF2D2D38)),
+                                            modifier = Modifier.height(34.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.padding(horizontal = 10.dp)
+                                            ) {
+                                                Text(
+                                                    text = rangeLabels.getOrElse(selectedDownloadRangeIndex) { "1 - 50" },
+                                                    color = Color.White,
+                                                    fontSize = 13.sp,
+                                                    fontFamily = PremiumTitleFont,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Icon(
+                                                    imageVector = Icons.Filled.ArrowDropDown,
+                                                    contentDescription = "Select Range",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        }
+
+                                        DropdownMenu(
+                                            expanded = isDownloadRangeDropdownExpanded,
+                                            onDismissRequest = { isDownloadRangeDropdownExpanded = false },
+                                            modifier = Modifier
+                                                .background(Color(0xFF1B1B22))
+                                                .width(130.dp)
+                                        ) {
+                                            rangeLabels.forEachIndexed { idx, label ->
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            text = label,
+                                                            color = if (idx == selectedDownloadRangeIndex) Color.White else Color(0xFF888899),
+                                                            fontFamily = PremiumTitleFont,
+                                                            fontWeight = if (idx == selectedDownloadRangeIndex) FontWeight.Bold else FontWeight.Medium,
+                                                            fontSize = 13.sp
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        selectedDownloadRangeIndex = idx
+                                                        isDownloadRangeDropdownExpanded = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(14.dp))
+
+                                if (isEpisodesLoading) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(130.dp)
+                                            .background(Color(0xFF141418), RoundedCornerShape(12.dp)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        CircularProgressIndicator(
+                                            color = Color.White,
+                                            modifier = Modifier.size(32.dp)
+                                        )
+                                    }
+                                } else if (episodes.isEmpty()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(130.dp)
+                                            .background(Color(0xFF141418), RoundedCornerShape(12.dp)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "No episodes available for download",
+                                            color = Color(0xFF777788),
+                                            fontSize = 14.sp,
+                                            fontFamily = PremiumBodyFont
+                                        )
+                                    }
+                                } else {
+                                    Column(
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        displayedEpisodes.forEach { ep ->
+                                            EpisodeCardItem(
+                                                episode = ep,
+                                                fallbackImage = anime.imageUrl,
+                                                isDownloadMode = true,
+                                                onClick = {
+                                                    selectedEpisodeForDownload = ep
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -799,8 +1123,12 @@ fun EpisodeListScreen(
 private fun EpisodeCardItem(
     episode: EpisodeItem,
     fallbackImage: String,
+    isDownloadMode: Boolean = false,
     onClick: () -> Unit
 ) {
+    val actionIcon = if (isDownloadMode) Icons.Filled.Download else Icons.Filled.PlayArrow
+    val actionDesc = if (isDownloadMode) "Download" else "Play"
+
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(12.dp),
@@ -837,8 +1165,8 @@ private fun EpisodeCardItem(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.PlayArrow,
-                            contentDescription = "Play",
+                            imageVector = actionIcon,
+                            contentDescription = actionDesc,
                             tint = Color.White,
                             modifier = Modifier.size(16.dp)
                         )
@@ -942,8 +1270,8 @@ private fun EpisodeCardItem(
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = "Play Episode",
+                    imageVector = actionIcon,
+                    contentDescription = actionDesc,
                     tint = Color.White,
                     modifier = Modifier.size(18.dp)
                 )

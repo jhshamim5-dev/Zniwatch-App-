@@ -581,7 +581,7 @@ fun ProfileScreen(
                         SettingActionRow(
                             icon = Icons.Filled.Info,
                             title = "App Version",
-                            subtitle = "v1.0.4",
+                            subtitle = "v${com.example.BuildConfig.VERSION_NAME}",
                             onClick = onAppVersionClick
                         )
                     }

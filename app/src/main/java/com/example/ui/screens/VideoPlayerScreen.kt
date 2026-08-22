@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import java.io.File
 import android.app.Activity
 import android.widget.Toast
 import android.content.pm.ActivityInfo
@@ -272,7 +273,9 @@ private fun ProfessionalAnimePlayer(
     // Function to load stream into ExoPlayer with Subtitles using custom HTTP headers
     val prepareExoPlayer: (EpisodeStreamResult) -> Unit = remember(exoPlayer) {
         { targetResult ->
-            val dataSourceFactory = DefaultHttpDataSource.Factory().apply {
+            val isLocalFile = targetResult.url.startsWith("/") || targetResult.url.startsWith("file://") || File(targetResult.url.removePrefix("file://")).exists()
+            
+            val httpFactory = DefaultHttpDataSource.Factory().apply {
                 val userAgent = targetResult.headers["User-Agent"]
                     ?: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 setUserAgent(userAgent)
@@ -288,6 +291,12 @@ private fun ProfessionalAnimePlayer(
                 setDefaultRequestProperties(reqProps)
             }
 
+            val dataSourceFactory = if (isLocalFile) {
+                androidx.media3.datasource.DefaultDataSource.Factory(context)
+            } else {
+                androidx.media3.datasource.DefaultDataSource.Factory(context, httpFactory)
+            }
+
             if (targetResult.subtitles.isNotEmpty()) {
                 if (selectedSubtitleTrack == null || targetResult.subtitles.none { it.url == selectedSubtitleTrack?.url }) {
                     selectedSubtitleTrack = targetResult.subtitles.firstOrNull { it.isDefault } ?: targetResult.subtitles.firstOrNull()
@@ -297,10 +306,15 @@ private fun ProfessionalAnimePlayer(
             }
 
             val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
-            val mediaUri = Uri.parse(targetResult.url)
+            val mediaUri = if (isLocalFile) {
+                val cleanPath = targetResult.url.removePrefix("file://")
+                Uri.fromFile(File(cleanPath))
+            } else {
+                Uri.parse(targetResult.url)
+            }
             val mediaItem = MediaItem.fromUri(mediaUri)
 
-            val isHls = targetResult.isM3u8 || targetResult.url.contains(".m3u8")
+            val isHls = !isLocalFile && (targetResult.isM3u8 || targetResult.url.contains(".m3u8"))
             val mediaSource = if (isHls) {
                 HlsMediaSource.Factory(dataSourceFactory)
                     .setAllowChunklessPreparation(true)
@@ -334,22 +348,33 @@ private fun ProfessionalAnimePlayer(
         }
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val url = java.net.URL(track.url)
-                val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.connectTimeout = 12000
-                conn.readTimeout = 12000
+                val trackUrl = track.url
+                val isLocalSub = trackUrl.startsWith("/") || trackUrl.startsWith("file://") || File(trackUrl.removePrefix("file://")).exists()
+                
+                val content = if (isLocalSub) {
+                    val subFile = File(trackUrl.removePrefix("file://"))
+                    if (subFile.exists()) subFile.readText() else ""
+                } else {
+                    val url = java.net.URL(trackUrl)
+                    val conn = url.openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 12000
+                    conn.readTimeout = 12000
 
-                val headers = currentStreamResult?.headers ?: emptyMap()
-                headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
-                if (conn.getRequestProperty("User-Agent") == null) {
-                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                }
-                if (conn.getRequestProperty("Referer") == null) {
-                    conn.setRequestProperty("Referer", "https://anikoto.cz/")
+                    val headers = currentStreamResult?.headers ?: emptyMap()
+                    headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+                    if (conn.getRequestProperty("User-Agent") == null) {
+                        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    }
+                    if (conn.getRequestProperty("Referer") == null) {
+                        conn.setRequestProperty("Referer", "https://anikoto.cz/")
+                    }
+
+                    if (conn.responseCode == 200) {
+                        conn.inputStream.bufferedReader().use { it.readText() }
+                    } else ""
                 }
 
-                if (conn.responseCode == 200) {
-                    val content = conn.inputStream.bufferedReader().use { it.readText() }
+                if (content.isNotEmpty()) {
                     val parsed = parseSubtitleContent(content)
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                         currentSubtitleCues = parsed
